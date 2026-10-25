@@ -1,0 +1,212 @@
+.depot-nav {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 30;
+  background: var(--depot-surface);
+  border-bottom: 1px solid transparent;
+  transition:
+    border-color var(--duration-base) var(--ease-out),
+    background-color var(--duration-base) var(--ease-out);
+}
+
+.depot-nav--scrolled {
+  border-bottom-color: var(--depot-line);
+}
+
+.depot-nav__inner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 60px;
+}
+
+/* Brand ------------------------------------------------------------------ */
+
+.depot-nav__brand {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--depot-ink);
+  transition: color var(--duration-base) var(--ease-out);
+}
+
+.depot-nav__brand:hover {
+  color: var(--depot-raspberry);
+}
+
+/* Links ------------------------------------------------------------------ */
+
+.depot-nav__links {
+  display: none;
+  margin-inline-start: 24px;
+}
+
+.depot-nav__links ul {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.depot-nav__link {
+  display: inline-block;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  color: var(--depot-ink-secondary);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.depot-nav__link:hover {
+  color: var(--depot-ink);
+}
+
+/* Network status --------------------------------------------------------- */
+
+.depot-nav__status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-inline-start: auto;
+}
+
+.depot-nav__status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--depot-line-strong);
+  flex: none;
+}
+
+.depot-nav__status-dot--active {
+  background: var(--depot-raspberry);
+}
+
+.depot-nav__status-text {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--depot-ink-tertiary);
+}
+
+/* Mobile toggle ---------------------------------------------------------- */
+
+.depot-nav__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-inline-end: -8px;
+  padding: 0;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.depot-nav__toggle-bars,
+.depot-nav__toggle-bars::before,
+.depot-nav__toggle-bars::after {
+  display: block;
+  width: 17px;
+  height: 1.5px;
+  background: var(--depot-ink);
+  transition: transform var(--duration-base) var(--ease-out);
+}
+
+.depot-nav__toggle-bars {
+  position: relative;
+}
+
+.depot-nav__toggle-bars::before,
+.depot-nav__toggle-bars::after {
+  content: "";
+  position: absolute;
+  left: 0;
+}
+
+.depot-nav__toggle-bars::before {
+  top: -5.5px;
+}
+
+.depot-nav__toggle-bars::after {
+  top: 5.5px;
+}
+
+.depot-nav[data-menu-open="true"] .depot-nav__toggle-bars {
+  background: transparent;
+}
+
+.depot-nav[data-menu-open="true"] .depot-nav__toggle-bars::before {
+  transform: translateY(5.5px) rotate(45deg);
+}
+
+.depot-nav[data-menu-open="true"] .depot-nav__toggle-bars::after {
+  transform: translateY(-5.5px) rotate(-45deg);
+}
+
+/* Mobile panel ----------------------------------------------------------- */
+
+.depot-nav__panel {
+  background: var(--depot-surface);
+  border-top: 1px solid var(--depot-line);
+}
+
+.depot-nav__panel[hidden] {
+  display: none;
+}
+
+.depot-nav__panel ul {
+  padding: 8px var(--shell-gutter) 20px;
+}
+
+.depot-nav__panel-link {
+  display: block;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--depot-line);
+  font-size: 16px;
+  color: var(--depot-ink);
+}
+
+.depot-nav__panel li:last-child .depot-nav__panel-link {
+  border-bottom: 0;
+}
+
+.depot-nav__panel-link:hover {
+  color: var(--depot-raspberry);
+}
+
+/* Desktop ---------------------------------------------------------------- */
+
+@media (min-width: 860px) {
+  .depot-nav__inner {
+    height: 68px;
+  }
+
+  .depot-nav__links {
+    display: block;
+  }
+
+  .depot-nav__toggle,
+  .depot-nav__panel {
+    display: none;
+  }
+
+  .depot-nav__status-text {
+    font-size: 11px;
+  }
+}
+
+@media (min-width: 1000px) {
+  .depot-nav__links {
+    margin-inline-start: 36px;
+  }
+
+  .depot-nav__links ul {
+    gap: 8px;
+  }
+}
