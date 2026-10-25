@@ -1,0 +1,30 @@
+/* ==========================================================================
+   DEPOT — page shell and section rhythm
+   All component styling lives beside its component; this file only governs
+   how the sections stack and separate.
+   ========================================================================== */
+
+.depot-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--depot-surface);
+}
+
+.depot-page__main {
+  flex: 1 1 auto;
+  outline: none;
+}
+
+/* Hairline rules between the light sections. The dark statement band and the
+   hero deliberately sit outside this rule so their edges stay crisp. */
+.depot-page__main > .depot-hero + .depot-section,
+.depot-page__main > .depot-section + .depot-section {
+  border-top: 1px solid var(--depot-line);
+}
+
+/* Anchor targets must clear the fixed navigation bar. */
+.depot-page__main section[id],
+.depot-page__main li[id] {
+  scroll-margin-top: 88px;
+}
