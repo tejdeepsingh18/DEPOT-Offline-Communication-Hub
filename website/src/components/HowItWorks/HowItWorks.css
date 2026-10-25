@@ -1,0 +1,51 @@
+.depot-how__steps {
+  display: grid;
+  grid-template-columns: 1fr;
+  margin-top: clamp(48px, 7vw, 80px);
+}
+
+.depot-how__step {
+  padding-block: 26px;
+  border-top: 1px solid var(--depot-line);
+}
+
+.depot-how__number {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--depot-raspberry);
+}
+
+.depot-how__title {
+  margin-top: 14px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.depot-how__copy {
+  margin-top: 8px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--depot-ink-secondary);
+  max-width: 34ch;
+}
+
+@media (min-width: 800px) {
+  .depot-how__steps {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-gap: 48px;
+  }
+
+  .depot-how__step {
+    padding-block: 30px 4px;
+  }
+
+  .depot-how__step + .depot-how__step {
+    padding-inline-start: 48px;
+    margin-inline-start: -48px;
+    border-inline-start: 1px solid var(--depot-line);
+  }
+}
