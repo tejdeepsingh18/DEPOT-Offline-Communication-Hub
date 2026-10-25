@@ -1,0 +1,38 @@
+# ==================================================================
+# DEPOT — systemd service for the Wi-Fi Access Point (hostapd)
+# ==================================================================
+# This is the one that makes the Pi BROADCAST the "depot" Wi-Fi network.
+# Where it lives on the Pi: /etc/systemd/system/hostapd-depot.service
+# How it gets registered:   sudo systemctl enable --now hostapd-depot
+
+[Unit]
+Description=DEPOT Wi-Fi Access Point (hostapd)
+# wait for basic networking to be awake first
+After=network.target
+
+[Service]
+Type=simple
+# IMPORTANT — the ExecStartPre lines below run BEFORE hostapd starts.
+# We set up the Pi's own IP on wlan0 OURSELVES, every single boot.
+# Why? Because a standalone access point needs NO ethernet cable, NO
+# internet, NO laptop, NO DHCP server of any kind. The Pi just needs
+# to be a "box with an address" so phones can have somewhere to visit.
+# (We learned this the hard way — NetworkManager was secretly providing
+# all that, but only while the ethernet cable was plugged in, so the AP
+# looked "broken" until we wired the IP in here by hand.)
+# give the Wi-Fi chip 2 s to wake up
+ExecStartPre=/bin/sleep 2
+# leading "-" means "don't fail if this errors"
+ExecStartPre=-/usr/sbin/ip addr flush dev wlan0
+# the Pi's own IP
+ExecStartPre=/usr/sbin/ip addr add 10.42.0.1/24 dev wlan0
+# make sure the antenna is "up"
+ExecStartPre=/usr/sbin/ip link set wlan0 up
+
+# THE actual AP program. It reads /home/netpie/depot/hostapd.conf.
+ExecStart=/usr/sbin/hostapd /home/netpie/depot/hostapd.conf
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

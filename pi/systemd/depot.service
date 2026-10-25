@@ -1,0 +1,42 @@
+# ==================================================================
+# DEPOT — systemd service for the chat server
+# ==================================================================
+# WHAT IS A "systemd SERVICE"?
+# On Linux, systemd is the program that boots everything else up.
+# A ".service" file is a short set of instructions: WHAT program to run,
+# WHEN to run it, and WHAT to do if it crashes.
+#
+# This one: "start the Python chat server automatically at every boot,
+# and restart it automatically if it ever dies."
+#
+# WHERE IT LIVES ON THE PI:  /etc/systemd/system/depot.service
+# HOW IT GETS REGISTERED:    sudo systemctl enable --now depot
+
+[Unit]
+# When should we start? After the "network" is basically up,
+# because we bind to 0.0.0.0:80 (listen on any interface).
+Description=DEPOT offline chat server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# one process, runs in the foreground
+Type=simple
+# run as the netpie user, NOT root — safer
+User=netpie
+Group=netpie
+ExecStart=/home/netpie/depot-venv/bin/python /home/netpie/depot/server.py
+WorkingDirectory=/home/netpie/depot
+# if the server ever crashes → start it again
+Restart=always
+# ...and give it 3 s to breathe first
+RestartSec=3
+# Port 80 is a "privileged" port — normally only root can bind to it.
+# These two lines let our non-root user bind to it anyway. Safer than
+# running the whole program as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+# "part of the normal boot flow, please"
+WantedBy=multi-user.target
