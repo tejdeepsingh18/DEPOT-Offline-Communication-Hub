@@ -1,0 +1,44 @@
+.depot-capabilities__list {
+  display: grid;
+  grid-template-columns: 1fr;
+  margin-top: clamp(48px, 7vw, 80px);
+}
+
+.depot-capabilities__item {
+  padding-block: 28px;
+  border-top: 1px solid var(--depot-line);
+}
+
+.depot-capabilities__title {
+  margin-top: 18px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.depot-capabilities__copy {
+  margin-top: 10px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--depot-ink-secondary);
+  max-width: 40ch;
+}
+
+@media (min-width: 800px) {
+  .depot-capabilities__list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-gap: 48px;
+  }
+
+  .depot-capabilities__item {
+    padding-block: 32px 4px;
+  }
+
+  /* Vertical hairlines separate the columns without enclosing each item.
+     The first item of every row starts flush, so rows of three stay aligned. */
+  .depot-capabilities__item:not(:nth-child(3n + 1)) {
+    padding-inline-start: 48px;
+    margin-inline-start: -48px;
+    border-inline-start: 1px solid var(--depot-line);
+  }
+}
