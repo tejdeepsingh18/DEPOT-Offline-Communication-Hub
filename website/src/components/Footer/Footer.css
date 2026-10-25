@@ -1,0 +1,61 @@
+.depot-footer {
+  border-top: 1px solid var(--depot-line);
+  padding-block: clamp(48px, 6vw, 72px);
+}
+
+.depot-footer__inner {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 36px;
+}
+
+.depot-footer__brand {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--depot-ink);
+}
+
+.depot-footer__tagline {
+  margin-top: 12px;
+  max-width: 32ch;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--depot-ink-secondary);
+}
+
+.depot-footer__credit {
+  margin-top: 20px;
+  font-size: 13px;
+  color: var(--depot-ink-tertiary);
+}
+
+.depot-footer__nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+}
+
+.depot-footer__link {
+  font-size: 13px;
+  color: var(--depot-ink-secondary);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.depot-footer__link:hover {
+  color: var(--depot-raspberry);
+}
+
+@media (min-width: 760px) {
+  .depot-footer__inner {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: 48px;
+  }
+
+  .depot-footer__nav ul {
+    justify-content: flex-end;
+    max-width: 34ch;
+  }
+}
