@@ -1,0 +1,1014 @@
+<!doctype html>
+<!--
+  ============================================================
+  DEPOT — chat web page (served to phones by the Pi's Python server)
+  ============================================================
+  ONE single HTML page: layout + CSS + JavaScript. No build tools.
+
+  FEATURES
+    • text chat            → POST /api/send
+    • files / images       → POST /api/upload (kind=file)
+    • voice notes          → POST /api/upload (kind=voice) — recorded in-app
+                             on https://10.42.0.1, or via the phone's own
+                             recorder app on plain http
+    • network dashboard    → GET  /api/network (+ live 'presence' events)
+    • SOS                  → POST /api/sos — everyone gets a full-screen
+                             alert with the sender's name, IP & health card
+    • spam guard           → the server answers 429 + retry_after when a
+                             person is throttled; we show a countdown and
+                             keep their text so nothing is lost
+
+  HOW DATA FLOWS
+    Receive: one permanent EventSource('/api/stream?token=..&after=LAST_ID')
+    Send:    ordinary fetch() / XHR POSTs. The server echoes everything back
+             through the stream with its real id, so we draw it only once.
+
+  THE 'lastId' TRICK
+    A fresh page load replays the recent history. After that the page
+    remembers the biggest message id it has drawn and, if the connection
+    drops, reconnects with after=<lastId> — nothing duplicated or missed.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#161b22">
+<title>DEPOT</title>
+<style>
+  /* ============================================================
+     STYLE
+     ============================================================ */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { font-family: system-ui, sans-serif; background: #0d1117; color: #e6edf3;
+         display: flex; flex-direction: column; overflow: hidden; }
+  button { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+
+  @keyframes pulse { 0%{opacity:1} 50%{opacity:.35} 100%{opacity:1} }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @keyframes flash { 0%,100% { background: #8b1a1a; } 50% { background: #d1242f; } }
+
+  /* ---------- header ---------- */
+  header { padding: 8px 10px 8px 14px; background: #161b22; border-bottom: 1px solid #30363d;
+           display: flex; align-items: center; gap: 6px;
+           padding-top: max(8px, env(safe-area-inset-top)); }
+  .logo { font-size: 1.2rem; }
+  header h1 { font-size: 1.05rem; letter-spacing: 1px; }
+  #me { color: #58a6ff; font-size: .8rem; flex: 1; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; margin-left: 4px; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: #f85149; flex-shrink: 0; }
+  #dot.on { background: #3fb950; animation: pulse 2.5s infinite; }
+  .hbtn { background: none; border: none; font-size: 1.05rem; cursor: pointer;
+          padding: 6px 8px; border-radius: 8px; position: relative; }
+  .hbtn:hover { background: #30363d; }
+  .hbtn.trash { color: #f85149; }
+  #onlineCount { position: absolute; top: 0; right: 0; background: #238636; color: #fff;
+                 font-size: .6rem; font-weight: 700; border-radius: 8px; padding: 1px 4px; }
+  #sosBtn { background: #d1242f; color: #fff; font-weight: 800; font-size: .8rem;
+            letter-spacing: 1px; padding: 7px 11px; border-radius: 16px; border: none; cursor: pointer; }
+  #sosBtn:active { transform: scale(.94); }
+
+  /* banner shown to someone whose own SOS is active */
+  #mySos { background: #8b1a1a; color: #fff; padding: 8px 14px; font-size: .85rem;
+           display: flex; align-items: center; gap: 10px; }
+  #mySos span { flex: 1; }
+  #mySos button { background: #fff; color: #8b1a1a; border: none; border-radius: 14px;
+                  padding: 6px 12px; font-weight: 700; cursor: pointer; }
+
+  /* ---------- messages ---------- */
+  #msgs { flex: 1; overflow-y: auto; padding: 14px 12px; scroll-behavior: smooth;
+          display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; gap: 8px; max-width: 82%; animation: pop .18s ease-out; }
+  .row.me-row { align-self: flex-end; flex-direction: row-reverse; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            font-size: .8rem; font-weight: 700; color: #fff; }
+  .msg { padding: 8px 12px; border-radius: 14px; line-height: 1.35;
+         word-break: break-word; font-size: .95rem; min-width: 0; }
+  .me   { background: #1f6feb; color: #fff; border-bottom-right-radius: 4px; }
+  .them { background: #21262d; border-bottom-left-radius: 4px; }
+  .who  { font-size: .72rem; font-weight: 600; color: #79c0ff; margin-bottom: 2px; }
+  .time { font-size: .65rem; opacity: .55; margin-top: 3px; text-align: right; }
+  .sys  { align-self: center; font-size: .75rem; color: #7d8590; }
+  .empty { align-self: center; text-align: center; color: #7d8590; margin-top: 18vh; font-size: .9rem; }
+  .empty .big { font-size: 2.4rem; margin-bottom: 10px; }
+  .caption { margin-top: 6px; }
+
+  /* images / files */
+  .img { display: block; max-width: 240px; max-height: 260px; width: 100%; border-radius: 10px;
+         background: #0d1117; cursor: zoom-in; object-fit: cover; }
+  .msg video { display: block; max-width: 260px; width: 100%; border-radius: 10px; }
+  .file { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit;
+          min-width: 180px; }
+  .file .ic { font-size: 1.6rem; }
+  .file .fn { font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis;
+              white-space: nowrap; max-width: 190px; }
+  .file .fs { font-size: .72rem; opacity: .7; }
+  .file .dl { margin-left: auto; font-size: 1.1rem; opacity: .85; }
+
+  /* voice note player */
+  .voice { display: flex; align-items: center; gap: 10px; min-width: 200px; }
+  .voice .play { width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer;
+                 background: rgba(255,255,255,.18); font-size: .9rem; flex-shrink: 0; }
+  .them .voice .play { background: #1f6feb; color: #fff; }
+  .voice .bar { flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,.25);
+                position: relative; cursor: pointer; }
+  .voice .bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0;
+                  background: currentColor; border-radius: 2px; }
+  .them .voice .bar i { background: #58a6ff; }
+  .voice .dur { font-size: .72rem; opacity: .8; min-width: 32px; text-align: right;
+                font-variant-numeric: tabular-nums; }
+
+  /* SOS card in chat */
+  .sos-card { align-self: stretch; max-width: none; border: 2px solid #f85149; border-radius: 14px;
+              background: #2a1215; padding: 12px 14px; animation: pop .18s ease-out; }
+  .sos-card.done { border-color: #30363d; background: #161b22; opacity: .8; }
+  .sos-card h3 { color: #ff7b72; font-size: .95rem; margin-bottom: 4px; }
+  .sos-card.done h3 { color: #7d8590; }
+  .sos-card .sub { font-size: .78rem; color: #c9d1d9; margin-bottom: 6px; }
+  .sos-card .acks { font-size: .75rem; color: #3fb950; margin-top: 6px; }
+  .sos-card button { margin-top: 8px; background: #d1242f; color: #fff; border: none;
+                     border-radius: 14px; padding: 6px 12px; font-weight: 700; cursor: pointer; }
+
+  .health { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: .82rem; }
+  .health dt { color: #8b949e; }
+  .health dd { color: #e6edf3; word-break: break-word; }
+
+  /* upload progress bubble */
+  .pending { opacity: .75; font-size: .85rem; }
+  .pending progress { width: 160px; display: block; margin-top: 4px; }
+
+  /* ---------- composer ---------- */
+  form#composer { display: flex; gap: 6px; padding: 8px 10px; background: #161b22;
+         border-top: 1px solid #30363d; align-items: center;
+         padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  input, select, textarea { padding: 12px 14px; border-radius: 22px; border: 1px solid #30363d;
+          background: #0d1117; color: #e6edf3; font-size: 1rem; outline: none; font-family: inherit; }
+  input:focus, select:focus, textarea:focus { border-color: #1f6feb; }
+  #box { flex: 1; min-width: 0; }
+  .cbtn { width: 42px; height: 42px; border-radius: 50%; border: none; background: #21262d;
+          font-size: 1.1rem; cursor: pointer; flex-shrink: 0; }
+  .cbtn:active { transform: scale(.92); }
+  button.send { padding: 0 20px; height: 42px; border-radius: 22px; border: none; background: #1f6feb;
+                color: #fff; font-size: 1rem; font-weight: 600; transition: transform .08s; cursor: pointer; }
+  button.send:active { transform: scale(.94); }
+
+  /* recording bar replaces the composer while recording */
+  #recBar { display: flex; gap: 10px; padding: 8px 12px; background: #161b22; align-items: center;
+            border-top: 1px solid #30363d; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  #recBar .rdot { width: 12px; height: 12px; border-radius: 50%; background: #f85149;
+                  animation: pulse 1s infinite; }
+  #recBar .rtime { flex: 1; font-variant-numeric: tabular-nums; }
+  #recBar .cancel { background: none; border: 1px solid #30363d; border-radius: 22px;
+                    padding: 10px 16px; cursor: pointer; }
+
+  /* spam-guard throttle banner (above the composer) */
+  #throttle { background: #3d1d00; color: #ffa657; border-top: 1px solid #6e3a00;
+              padding: 8px 14px; font-size: .85rem; display: flex; gap: 8px; align-items: center; }
+  #throttle b { font-variant-numeric: tabular-nums; }
+  form#composer.blocked .send, form#composer.blocked .cbtn { opacity: .4; pointer-events: none; }
+  .tag.bad { background: #3d1d00; color: #ffa657; }
+  .rules { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: .8rem;
+           padding: 10px 12px; color: #c9d1d9; }
+  .rules span:nth-child(even) { color: #8b949e; text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* toast */
+  #toast { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%);
+           background: #30363d; color: #e6edf3; padding: 10px 16px; border-radius: 12px;
+           font-size: .85rem; z-index: 30; max-width: 90vw; text-align: center;
+           box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+
+  /* ---------- overlays (gate, network, SOS) ---------- */
+  .sheet { position: fixed; inset: 0; z-index: 9; overflow-y: auto;
+           background: radial-gradient(circle at 50% 20%, #16213a, #0d1117); }
+  #gate .inner { min-height: 100%; display: flex; flex-direction: column; align-items: center;
+                 justify-content: center; gap: 14px; padding: 28px 20px; text-align: center; }
+  #gate h2 { font-size: 1.5rem; letter-spacing: 2px; }
+  #gate .big { font-size: 2.6rem; }
+  #gate .hint { color: #7d8590; font-size: .85rem; }
+  #gate input#uname { width: 250px; text-align: center; border-radius: 24px; }
+  #gate .send { padding: 12px 32px; border-radius: 24px; letter-spacing: .5px; height: auto; }
+  fieldset.hc { width: min(340px, 100%); border: 1px solid #30363d; border-radius: 16px;
+                padding: 12px 14px 14px; text-align: left; display: grid; gap: 8px; }
+  fieldset.hc legend { padding: 0 6px; color: #ff7b72; font-weight: 600; font-size: .85rem; }
+  fieldset.hc p { color: #7d8590; font-size: .75rem; line-height: 1.35; }
+  fieldset.hc label { font-size: .75rem; color: #8b949e; display: grid; gap: 4px; }
+  fieldset.hc input, fieldset.hc select { border-radius: 12px; padding: 9px 12px; font-size: .9rem; width: 100%; }
+  .linkbtn { background: none; border: none; color: #58a6ff; cursor: pointer; font-size: .85rem; }
+
+  /* network dashboard */
+  #net { z-index: 10; background: #0d1117; }
+  #net .top, .modal .top { display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+           border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0;
+           padding-top: max(12px, env(safe-area-inset-top)); }
+  #net .top h2 { font-size: 1rem; flex: 1; letter-spacing: .5px; }
+  #net .body { padding: 14px; display: grid; gap: 16px; max-width: 760px; margin: 0 auto; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+  .stat { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 1.05rem; word-break: break-word; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: .7rem; color: #8b949e; text-transform: uppercase; letter-spacing: .5px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; overflow: hidden; }
+  .card h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .6px; color: #8b949e;
+             padding: 10px 12px; border-bottom: 1px solid #30363d; display: flex; gap: 8px; }
+  .card h3 em { margin-left: auto; font-style: normal; color: #3fb950; }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #21262d; }
+  th { font-size: .7rem; color: #8b949e; font-weight: 600; text-transform: uppercase; }
+  td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; }
+  tr:last-child td { border-bottom: none; }
+  .tag { font-size: .65rem; border-radius: 8px; padding: 2px 6px; background: #21262d; color: #8b949e; }
+  .tag.ok { background: #12361f; color: #3fb950; }
+  .tag.you { background: #0c2d6b; color: #79c0ff; }
+  .muted { color: #7d8590; font-size: .8rem; padding: 10px 12px; }
+
+  /* SOS confirm + alert */
+  .modal { position: fixed; inset: 0; z-index: 20; background: rgba(1,4,9,.8);
+           display: flex; align-items: center; justify-content: center; padding: 18px; }
+  .modal .box { background: #161b22; border: 1px solid #30363d; border-radius: 18px;
+                width: min(420px, 100%); padding: 20px; display: grid; gap: 12px; }
+  .modal h2 { font-size: 1.15rem; }
+  .modal p { color: #8b949e; font-size: .88rem; line-height: 1.4; }
+  .modal textarea { border-radius: 12px; resize: none; font-size: .9rem; }
+  .modal .actions { display: flex; gap: 10px; }
+  .modal .actions button { flex: 1; padding: 12px; border-radius: 14px; border: 1px solid #30363d;
+                           background: #21262d; cursor: pointer; font-weight: 600; }
+  .modal .actions .danger { background: #d1242f; border-color: #d1242f; color: #fff; }
+
+  #alert { z-index: 25; animation: flash 1.2s infinite; align-items: stretch; padding: 0; }
+  #alert .box { margin: auto; background: #0d1117; border: 3px solid #f85149;
+                padding: 20px; max-height: 92vh; overflow-y: auto; width: min(440px, 92vw); }
+  #alert .head { color: #ff7b72; font-weight: 900; font-size: 1.5rem; letter-spacing: 2px; text-align: center; }
+  #alert .who { font-size: 1.4rem; color: #fff; text-align: center; margin: 0; }
+  #alert .ip { text-align: center; color: #c9d1d9; }
+  #alert .note { background: #2a1215; border-radius: 10px; padding: 10px; color: #ffdcd7; font-size: .95rem; }
+  #alert .acks { color: #3fb950; font-size: .85rem; text-align: center; }
+  #alert.resolved { animation: none; background: rgba(1,4,9,.85); }
+  #alert.resolved .box { border-color: #3fb950; }
+</style>
+</head>
+<body>
+
+<!-- ======================= SIGN-UP GATE ======================= -->
+<div id="gate" class="sheet">
+  <div class="inner">
+    <div class="big">📦</div>
+    <h2>DEPOT</h2>
+    <p class="hint">offline messaging · no internet needed</p>
+    <input id="uname" placeholder="Your display name" maxlength="20" autocomplete="off">
+
+    <fieldset class="hc">
+      <legend>🆘 Emergency health card</legend>
+      <p>Optional. Kept on the Pi and shown to people nearby <b>only if you press SOS</b>.</p>
+      <label>Blood group
+        <select id="h_blood">
+          <option value="">—</option>
+          <option>A+</option><option>A-</option><option>B+</option><option>B-</option>
+          <option>AB+</option><option>AB-</option><option>O+</option><option>O-</option>
+          <option>Don't know</option>
+        </select>
+      </label>
+      <label>Allergies <input id="h_allergies" maxlength="200" placeholder="e.g. penicillin, peanuts"></label>
+      <label>Medical conditions <input id="h_conditions" maxlength="200" placeholder="e.g. asthma, diabetes"></label>
+      <label>Medications <input id="h_medications" maxlength="200" placeholder="e.g. inhaler, insulin"></label>
+      <label>Emergency contact <input id="h_contact" maxlength="200" placeholder="name · phone"></label>
+      <label>Other notes <input id="h_notes" maxlength="200" placeholder="anything a helper should know"></label>
+    </fieldset>
+
+    <button class="send" id="joinBtn" onclick="join()">Enter depot</button>
+    <button class="linkbtn" id="gateCancel" onclick="hideGate()" hidden>Cancel</button>
+  </div>
+</div>
+
+<!-- ======================= HEADER ======================= -->
+<header>
+  <span class="logo">📦</span>
+  <h1>DEPOT</h1>
+  <span id="me" title="Edit your profile" onclick="showGate(true)" style="cursor:pointer"></span>
+  <div id="dot" title="connection"></div>
+  <button class="hbtn" title="Network monitor" onclick="openNet()">📡<span id="onlineCount" hidden>0</span></button>
+  <button class="hbtn trash" title="Clear chat (everyone)" onclick="clearChat()">🗑</button>
+  <button id="sosBtn" title="Emergency SOS" onclick="openSos()">SOS</button>
+</header>
+
+<div id="mySos" hidden>
+  <span>🆘 Your SOS is active — everyone on DEPOT has been alerted.</span>
+  <button onclick="resolveMySos()">I'm safe</button>
+</div>
+
+<!-- ======================= CHAT ======================= -->
+<div id="msgs">
+  <div class="empty" id="welcome">
+    <div class="big">💬</div>Say hi — start the conversation.
+  </div>
+</div>
+
+<div id="throttle" hidden>🛡️ <span>Slow down — spam guard paused your sending
+  (<span id="thrWhy"></span>). Try again in <b id="thrLeft">0</b> s.</span></div>
+
+<form id="composer" onsubmit="send(); return false;">
+  <button type="button" class="cbtn" title="Send a file or photo" onclick="pickFile()">📎</button>
+  <input id="box" placeholder="Message…" autocomplete="off" maxlength="2000">
+  <button type="button" class="cbtn" id="micBtn" title="Record a voice note" onclick="startVoice()">🎤</button>
+  <button class="send" title="Send">➤</button>
+</form>
+
+<div id="recBar" hidden>
+  <div class="rdot"></div>
+  <div class="rtime" id="recTime">0:00</div>
+  <button type="button" class="cancel" onclick="stopVoice(false)">✕ Cancel</button>
+  <button type="button" class="send" onclick="stopVoice(true)">➤ Send</button>
+</div>
+
+<input type="file" id="filePick" hidden multiple>
+<input type="file" id="audioPick" hidden accept="audio/*" capture>
+
+<!-- ======================= NETWORK DASHBOARD ======================= -->
+<div id="net" class="sheet" hidden>
+  <div class="top">
+    <h2>📡 Live network · <span class="mono" id="netSsid">depot</span></h2>
+    <span id="netUpdated" class="tag">live</span>
+    <button class="hbtn" onclick="closeNet()" title="Close">✕</button>
+  </div>
+  <div class="body">
+    <div class="stats" id="netStats"></div>
+    <div class="card">
+      <h3>👥 In DEPOT right now <em id="netUserCount"></em></h3>
+      <table><thead><tr><th>Name</th><th>IP</th><th>Online for</th><th>Status</th></tr></thead>
+        <tbody id="netUsers"></tbody></table>
+    </div>
+    <div class="card">
+      <h3>🛡️ Spam guard <em id="spamSummary"></em></h3>
+      <table><thead><tr><th>When</th><th>Who</th><th>Why</th><th>Timeout</th></tr></thead>
+        <tbody id="spamEvents"></tbody></table>
+      <div class="rules" id="spamRules"></div>
+    </div>
+    <div class="card">
+      <h3>📶 Devices on the Wi-Fi <em id="netWifiCount"></em></h3>
+      <table><thead><tr><th>IP</th><th>Device</th><th>Status</th></tr></thead>
+        <tbody id="netWifi"></tbody></table>
+    </div>
+    <p class="muted" style="padding:0">“In DEPOT” = has the chat open. “On the Wi-Fi” = joined the
+      <b>depot</b> network (from the Pi's DHCP leases), whether or not the chat is open.</p>
+  </div>
+</div>
+
+<!-- ======================= SOS: confirm ======================= -->
+<div id="sosConfirm" class="modal" hidden>
+  <div class="box">
+    <h2>🆘 Send an SOS?</h2>
+    <p>Everyone connected to DEPOT will get a loud full-screen alert with your
+       <b>name</b>, <b>IP</b> and your <b>health card</b>.</p>
+    <textarea id="sosNote" rows="3" maxlength="300" placeholder="Optional: what's happening / where you are"></textarea>
+    <div class="actions">
+      <button onclick="closeSos()">Cancel</button>
+      <button class="danger" onclick="sendSos()">SEND SOS</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= SOS: incoming alert ======================= -->
+<div id="alert" class="modal" hidden>
+  <div class="box">
+    <div class="head" id="alHead">🆘 EMERGENCY</div>
+    <p class="who" id="alWho"></p>
+    <p class="ip mono" id="alIp"></p>
+    <div class="note" id="alNote" hidden></div>
+    <dl class="health" id="alHealth"></dl>
+    <div class="acks" id="alAcks"></div>
+    <div class="actions">
+      <button onclick="dismissAlert()">Dismiss</button>
+      <button class="danger" id="alAck" onclick="ackAlert()">I'm coming</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script>
+/* ============================================================
+   JAVASCRIPT
+   ============================================================ */
+const $ = (id) => document.getElementById(id);
+const MSGS = $('msgs'), DOT = $('dot'), BOX = $('box');
+const LS = {                              // localStorage that never throws
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+const HEALTH = ['blood', 'allergies', 'conditions', 'medications', 'contact', 'notes'];
+const HEALTH_LABEL = { blood: 'Blood group', allergies: 'Allergies', conditions: 'Conditions',
+                       medications: 'Medications', contact: 'Emergency contact', notes: 'Notes' };
+
+let me = LS.get('depot_name', '');
+let token = LS.get('depot_token', '');
+let lastId = 0;                           // newest id drawn on THIS page (fresh load = full replay)
+let es = null, myIp = '', online = [];
+let live = false;                         // false while history is replaying
+const sosMsgs = {};                       // id -> sos message (for live updates)
+
+/* ---------- little helpers ---------- */
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function toast(t, ms = 3500) {
+  const T = $('toast'); T.textContent = t; T.hidden = false;
+  clearTimeout(toast._t); toast._t = setTimeout(() => T.hidden = true, ms);
+}
+function timeStr(ts) {
+  const d = new Date(ts * 1000);
+  return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+}
+function fmtSize(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(0) + ' KB';
+  return (b / 1048576).toFixed(1) + ' MB';
+}
+function fmtDur(s) {
+  s = Math.max(0, Math.round(s || 0));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+function fmtAgo(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm';
+  if (sec < 86400) return Math.floor(sec / 3600) + 'h ' + Math.floor(sec % 3600 / 60) + 'm';
+  return Math.floor(sec / 86400) + 'd ' + Math.floor(sec % 86400 / 3600) + 'h';
+}
+const AVATAR_COLORS = ['#238636','#a371f7','#f778ba','#ffab70','#d29922','#db61a2','#58a6ff'];
+function avatarColor(name) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) & 0xfff;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+async function api(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ token, user: me, ...body }) });
+  let j = {}; try { j = await r.json(); } catch {}
+  if (!r.ok) { const e = new Error(j.error || ('HTTP ' + r.status)); e.status = r.status; e.data = j; throw e; }
+  return j;
+}
+
+/* ============================================================
+   SIGN-UP / PROFILE
+   ============================================================ */
+function showGate(editing) {
+  $('uname').value = me;
+  $('gateCancel').hidden = !editing;
+  $('joinBtn').textContent = editing ? 'Save profile' : 'Enter depot';
+  $('gate').hidden = false;
+  if (editing && token) {
+    fetch('/api/me?token=' + encodeURIComponent(token)).then(r => r.json()).then(j => {
+      if (j.ok) HEALTH.forEach(k => $('h_' + k).value = j.health[k] || '');
+    }).catch(() => {});
+  }
+}
+function hideGate() { $('gate').hidden = true; }
+
+async function join() {
+  const name = $('uname').value.trim();
+  if (!name) { toast('Enter a display name'); $('uname').focus(); return; }
+  const health = {};
+  HEALTH.forEach(k => health[k] = $('h_' + k).value.trim());
+  $('joinBtn').disabled = true;
+  try {
+    const j = await api('/api/register', { name, health });
+    const renamed = j.name !== me;
+    token = j.token; me = j.name;
+    LS.set('depot_token', token); LS.set('depot_name', me);
+    $('me').textContent = me;
+    hideGate();
+    if (!es || renamed) connect();
+    unlockAudio();
+  } catch (e) {
+    toast('Could not reach DEPOT: ' + e.message);
+  } finally { $('joinBtn').disabled = false; }
+}
+
+/* ============================================================
+   LIVE STREAM
+   ============================================================ */
+function connect() {
+  if (es) es.close();
+  live = false;
+  DOT.classList.remove('on');
+  es = new EventSource('/api/stream?token=' + encodeURIComponent(token) +
+                       '&user=' + encodeURIComponent(me) + '&after=' + lastId);
+  es.onopen = () => DOT.classList.add('on');
+  es.onerror = () => { DOT.classList.remove('on'); es.close(); live = false;
+                       setTimeout(connect, 1500); };
+  es.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch (err) { console.error(err); } };
+}
+
+function handle(d) {
+  switch (d.type) {
+    case 'msg':        return render(d);
+    case 'system':     return renderSys(d.text);
+    case 'connected':  live = true; DOT.classList.add('on'); myIp = d.ip || myIp;
+                       setPresence(d.users || []); return checkActiveSos();
+    case 'presence':   return setPresence(d.users);
+    case 'sos_update': return sosUpdate(d.id, d.meta);
+    case 'clear':      return clearLocal(false);
+  }
+}
+
+function setPresence(users) {
+  online = users || [];
+  const c = $('onlineCount');
+  c.textContent = online.length; c.hidden = online.length === 0;
+  if (!$('net').hidden) renderNetUsers();
+}
+
+/* ============================================================
+   RENDERING MESSAGES
+   ============================================================ */
+function append(node) {
+  const w = $('welcome'); if (w) w.remove();
+  const nearBottom = MSGS.scrollHeight - MSGS.scrollTop - MSGS.clientHeight < 160;
+  MSGS.appendChild(node);
+  if (nearBottom || !live) MSGS.scrollTop = MSGS.scrollHeight;
+}
+function renderSys(text) { append(el('div', 'msg sys', text)); }
+
+function render(d) {
+  if (d.id) {
+    if (document.querySelector(`[data-id="${d.id}"]`)) return;   // never draw twice
+    lastId = Math.max(lastId, d.id);
+  }
+  if (d.kind === 'sos') return renderSos(d);
+
+  const mine = d.user === me;
+  const row = el('div', 'row ' + (mine ? 'me-row' : ''));
+  row.dataset.id = d.id;
+  if (!mine) {
+    const av = el('div', 'avatar', d.user.slice(0, 1).toUpperCase());
+    av.style.background = avatarColor(d.user);
+    row.appendChild(av);
+  }
+  const inner = el('div', 'msg ' + (mine ? 'me' : 'them'));
+  if (!mine) inner.appendChild(el('div', 'who', d.user));
+
+  const m = d.meta || {};
+  if (d.kind === 'voice') {
+    inner.appendChild(voicePlayer('/files/' + encodeURIComponent(m.file), m.duration));
+  } else if (d.kind === 'file') {
+    inner.appendChild(fileView(m));
+  }
+  if (d.text) inner.appendChild(el('div', d.kind === 'text' ? '' : 'caption', d.text));
+  inner.appendChild(el('div', 'time', timeStr(d.ts)));
+  row.appendChild(inner);
+  append(row);
+}
+
+function fileView(m) {
+  const url = '/files/' + encodeURIComponent(m.file);
+  const mime = m.mime || '';
+  if (mime.startsWith('image/')) {
+    const img = el('img', 'img'); img.src = url; img.alt = m.name; img.loading = 'lazy';
+    img.onclick = () => window.open(url, '_blank');
+    img.onload = () => { if (live) MSGS.scrollTop = MSGS.scrollHeight; };
+    return img;
+  }
+  if (mime.startsWith('video/')) {
+    const v = el('video'); v.src = url; v.controls = true; v.preload = 'metadata'; return v;
+  }
+  if (mime.startsWith('audio/')) return voicePlayer(url, 0);
+  const a = el('a', 'file'); a.href = url + '?dl=1'; a.download = m.name;
+  const icon = mime.includes('pdf') ? '📕' : mime.includes('zip') ? '🗜️' :
+               mime.startsWith('text/') ? '📄' : (/sheet|excel|csv/.test(mime) ? '📊' :
+               /presentation|powerpoint/.test(mime) ? '📽️' : /word|document/.test(mime) ? '📝' : '📎');
+  a.appendChild(el('span', 'ic', icon));
+  const info = el('div');
+  info.appendChild(el('div', 'fn', m.name));
+  info.appendChild(el('div', 'fs', fmtSize(m.size || 0)));
+  a.appendChild(info);
+  a.appendChild(el('span', 'dl', '⬇'));
+  return a;
+}
+
+/* A small WhatsApp-style voice player: ▶ button, progress bar, duration. */
+function voicePlayer(url, dur) {
+  const wrap = el('div', 'voice');
+  const btn = el('button', 'play', '▶'); btn.type = 'button';
+  const bar = el('div', 'bar'); const fill = el('i'); bar.appendChild(fill);
+  const t = el('span', 'dur', fmtDur(dur));
+  wrap.append(btn, bar, t);
+  let audio = null;
+  const ensure = () => {
+    if (audio) return audio;
+    audio = new Audio(url); audio.preload = 'auto';
+    audio.ontimeupdate = () => {
+      const total = isFinite(audio.duration) && audio.duration > 0 ? audio.duration : dur;
+      fill.style.width = total ? Math.min(100, audio.currentTime / total * 100) + '%' : '0';
+      t.textContent = fmtDur(audio.currentTime);
+    };
+    audio.onended = () => { btn.textContent = '▶'; fill.style.width = '0'; t.textContent = fmtDur(dur || audio.duration); };
+    audio.onpause = () => btn.textContent = '▶';
+    audio.onplay = () => btn.textContent = '❚❚';
+    return audio;
+  };
+  btn.onclick = () => {
+    const a = ensure();
+    document.querySelectorAll('audio').forEach(x => x !== a && x.pause());
+    if (voicePlayer.current && voicePlayer.current !== a) voicePlayer.current.pause();
+    voicePlayer.current = a;
+    a.paused ? a.play().catch(e => toast('Cannot play: ' + e.message)) : a.pause();
+  };
+  bar.onclick = (e) => {
+    const a = ensure(); const r = bar.getBoundingClientRect();
+    const total = isFinite(a.duration) && a.duration > 0 ? a.duration : dur;
+    if (total) a.currentTime = (e.clientX - r.left) / r.width * total;
+  };
+  return wrap;
+}
+
+/* ---------- SOS card in the chat ---------- */
+function healthList(h) {
+  const dl = el('dl', 'health');
+  let any = false;
+  HEALTH.forEach(k => {
+    if (h && h[k]) { any = true; dl.append(el('dt', '', HEALTH_LABEL[k])); dl.append(el('dd', '', h[k])); }
+  });
+  if (!any) { dl.append(el('dt', '', 'Health card')); dl.append(el('dd', '', 'not provided')); }
+  return dl;
+}
+function renderSos(d) {
+  sosMsgs[d.id] = d;
+  const card = el('div', 'sos-card');
+  card.dataset.id = d.id;
+  fillSosCard(card, d);
+  append(card);
+  maybeAlert(d);
+}
+function fillSosCard(card, d) {
+  const m = d.meta || {};
+  card.textContent = '';
+  card.classList.toggle('done', !m.active);
+  card.append(el('h3', '', (m.active ? '🆘 SOS — ' : '✅ SOS resolved — ') + m.name));
+  card.append(el('div', 'sub mono', `IP ${m.ip} · ${timeStr(d.ts)}` +
+                 (m.resolved_ts ? ` · safe at ${timeStr(m.resolved_ts)}` : '')));
+  if (m.note) card.append(el('div', 'sub', '“' + m.note + '”'));
+  card.append(healthList(m.health));
+  if (m.acks && m.acks.length) card.append(el('div', 'acks', '🏃 Responding: ' + m.acks.join(', ')));
+  if (m.active && m.name !== me) {
+    const b = el('button', '', "I'm coming"); b.onclick = () => ack(d.id); card.append(b);
+  }
+}
+function sosUpdate(id, meta) {
+  const d = sosMsgs[id]; if (!d) return;
+  d.meta = meta;
+  const card = document.querySelector(`.sos-card[data-id="${id}"]`);
+  if (card) fillSosCard(card, d);
+  if (alertId === id) showAlert(d);
+  refreshMySos();
+}
+
+/* ============================================================
+   SOS — sending
+   ============================================================ */
+function openSos() {
+  if (!token) { showGate(false); return; }
+  $('sosNote').value = ''; $('sosConfirm').hidden = false; unlockAudio();
+}
+function closeSos() { $('sosConfirm').hidden = true; }
+async function sendSos() {
+  closeSos();
+  try {
+    await api('/api/sos', { note: $('sosNote').value.trim() });
+    toast('🆘 SOS sent to everyone on DEPOT');
+  } catch (e) { toast('SOS failed: ' + e.message); }
+}
+function mySosActive() {
+  return Object.values(sosMsgs).filter(d => d.meta && d.meta.active && d.meta.name === me);
+}
+function refreshMySos() { $('mySos').hidden = mySosActive().length === 0; }
+async function resolveMySos() {
+  for (const d of mySosActive()) {
+    try { await api('/api/sos/resolve', { id: d.id }); } catch (e) { toast(e.message); }
+  }
+}
+async function ack(id) {
+  try { await api('/api/sos/ack', { id }); toast('They can see you are responding'); }
+  catch (e) { toast(e.message); }
+}
+
+/* ============================================================
+   SOS — receiving (full-screen alert + vibration + alarm)
+   ============================================================ */
+let alertId = null, alarm = null, actx = null;
+const SOS_ALERT_WINDOW = 30 * 60;                  // re-alert latecomers for 30 min
+
+function dismissed() { try { return JSON.parse(LS.get('depot_sos_seen', '[]')); } catch { return []; } }
+function markDismissed(id) { const s = dismissed(); s.push(id); LS.set('depot_sos_seen', JSON.stringify(s.slice(-50))); }
+
+function maybeAlert(d) {
+  refreshMySos();
+  const m = d.meta || {};
+  if (!m.active || m.name === me) return;
+  if (Date.now() / 1000 - d.ts > SOS_ALERT_WINDOW) return;
+  if (dismissed().includes(d.id)) return;
+  showAlert(d);
+}
+function checkActiveSos() { Object.values(sosMsgs).forEach(maybeAlert); }
+
+function showAlert(d) {
+  const m = d.meta || {};
+  alertId = d.id;
+  $('alert').classList.toggle('resolved', !m.active);
+  $('alHead').textContent = m.active ? '🆘 EMERGENCY' : '✅ RESOLVED';
+  $('alWho').textContent = m.active ? `${m.name} needs help` : `${m.name} is safe now`;
+  $('alIp').textContent = `IP ${m.ip} · ${timeStr(d.ts)}`;
+  $('alNote').hidden = !m.note; $('alNote').textContent = m.note ? '“' + m.note + '”' : '';
+  const hl = healthList(m.health); hl.id = 'alHealth'; $('alHealth').replaceWith(hl);
+  $('alAcks').textContent = (m.acks && m.acks.length) ? '🏃 Responding: ' + m.acks.join(', ') : 'Nobody has responded yet';
+  $('alAck').hidden = !m.active || (m.acks || []).includes(me);
+  $('alert').hidden = false;
+  if (m.active) startAlarm(); else { stopAlarm(); setTimeout(() => { if (alertId === d.id) dismissAlert(); }, 4000); }
+}
+function dismissAlert() {
+  if (alertId) markDismissed(alertId);
+  alertId = null; $('alert').hidden = true; stopAlarm();
+}
+function ackAlert() { const id = alertId; ack(id); stopAlarm(); }
+
+function unlockAudio() {                 // browsers only allow sound after a tap
+  try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); actx.resume(); } catch {}
+}
+function startAlarm() {
+  if (alarm) return;
+  try { navigator.vibrate && navigator.vibrate([600, 300, 600, 300, 600]); } catch {}
+  if (!actx) return;
+  let hi = true;
+  const beep = () => {
+    try {
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = 'square'; o.frequency.value = hi ? 1040 : 780; hi = !hi;
+      g.gain.setValueAtTime(0.12, actx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + 0.4);
+      o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.42);
+    } catch {}
+  };
+  beep(); alarm = setInterval(() => {
+    beep();
+    try { navigator.vibrate && navigator.vibrate(400); } catch {}
+  }, 900);
+  setTimeout(stopAlarm, 30000);             // don't scream forever
+}
+function stopAlarm() { clearInterval(alarm); alarm = null; try { navigator.vibrate && navigator.vibrate(0); } catch {} }
+
+/* ============================================================
+   SENDING: text, files, voice
+   ============================================================ */
+function send() {
+  const t = BOX.value.trim();
+  if (!t || throttledUntil > Date.now()) return;
+  BOX.value = ''; BOX.focus();
+  api('/api/send', { text: t }).catch(e => {
+    if (!BOX.value) BOX.value = t;                 // give their text back
+    if (e.status === 429) throttle(e.data); else toast('Not sent: ' + e.message);
+  });
+}
+
+/* ---------- spam guard: countdown while throttled ---------- */
+let throttledUntil = 0, thrTimer = null;
+function throttle(d) {
+  throttledUntil = Date.now() + (d.retry_after || 30) * 1000;
+  $('thrWhy').textContent = (d.reasons || []).join(', ') || 'too fast';
+  $('throttle').hidden = false; $('composer').classList.add('blocked');
+  clearInterval(thrTimer);
+  const tick = () => {
+    const left = Math.ceil((throttledUntil - Date.now()) / 1000);
+    if (left <= 0) {
+      clearInterval(thrTimer); $('throttle').hidden = true; $('composer').classList.remove('blocked');
+      return;
+    }
+    $('thrLeft').textContent = left;
+  };
+  tick(); thrTimer = setInterval(tick, 250);
+}
+
+function pickFile() { $('filePick').click(); }
+$('filePick').onchange = (e) => { [...e.target.files].forEach(f => upload(f, 'file')); e.target.value = ''; };
+$('audioPick').onchange = (e) => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  const a = new Audio(); a.preload = 'metadata';     // read the length before sending
+  a.onloadedmetadata = () => { upload(f, 'voice', isFinite(a.duration) ? a.duration : 0); URL.revokeObjectURL(a.src); };
+  a.onerror = () => upload(f, 'voice', 0);
+  a.src = URL.createObjectURL(f);
+};
+
+const MAX_MB = 25;
+function upload(file, kind, duration = 0, name) {
+  if (throttledUntil > Date.now()) { toast('Spam guard: wait a few seconds'); return; }
+  if (file.size > MAX_MB * 1048576) { toast(`${file.name || 'File'} is over ${MAX_MB} MB`); return; }
+  const fd = new FormData();
+  fd.append('file', file, name || file.name || 'file');
+  fd.append('token', token); fd.append('user', me);
+  fd.append('kind', kind); fd.append('duration', duration);
+  const row = el('div', 'row me-row');
+  const bub = el('div', 'msg me pending', (kind === 'voice' ? '🎤 Voice note' : '📎 ' + (name || file.name)) + ' — sending…');
+  const prog = el('progress'); prog.max = 100; prog.value = 0; bub.appendChild(prog);
+  row.appendChild(bub); append(row);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload?token=' + encodeURIComponent(token));
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) prog.value = e.loaded / e.total * 100; };
+  xhr.onload = () => {
+    row.remove();
+    if (xhr.status !== 200) {
+      let j = {}; try { j = JSON.parse(xhr.responseText); } catch {}
+      if (xhr.status === 429) throttle(j);
+      else toast('Upload failed: ' + (j.error || 'HTTP ' + xhr.status));
+    }
+  };
+  xhr.onerror = () => { row.remove(); toast('Upload failed — lost connection to the Pi'); };
+  xhr.send(fd);
+}
+
+/* ---------- voice notes ----------
+   In-app recording needs a "secure context" (https:// or localhost).
+   On plain http we hand off to the phone's built-in recorder instead. */
+let rec = null, recChunks = [], recStart = 0, recTimer = null, recStream = null;
+const VOICE_MAX_S = 120;
+
+function canRecord() {
+  return window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder;
+}
+async function startVoice() {
+  if (throttledUntil > Date.now()) return;
+  if (!canRecord()) {
+    toast('In-app recording needs https://10.42.0.1 — opening your phone’s recorder instead', 5000);
+    $('audioPick').click();
+    return;
+  }
+  try {
+    recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) { toast('Microphone blocked: ' + e.message); return; }
+  const type = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
+               .find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
+  rec = new MediaRecorder(recStream, type ? { mimeType: type, audioBitsPerSecond: 32000 } : undefined);
+  recChunks = [];
+  rec.ondataavailable = (e) => { if (e.data.size) recChunks.push(e.data); };
+  rec.start(250);
+  recStart = Date.now();
+  $('composer').hidden = true; $('recBar').hidden = false;
+  $('recTime').textContent = '0:00';
+  recTimer = setInterval(() => {
+    const s = (Date.now() - recStart) / 1000;
+    $('recTime').textContent = fmtDur(s) + ' / ' + fmtDur(VOICE_MAX_S);
+    if (s >= VOICE_MAX_S) stopVoice(true);
+  }, 250);
+}
+function stopVoice(sendIt) {
+  if (!rec) return;
+  clearInterval(recTimer);
+  const dur = (Date.now() - recStart) / 1000;
+  const r = rec; rec = null;
+  r.onstop = () => {
+    recStream.getTracks().forEach(t => t.stop());
+    $('recBar').hidden = true; $('composer').hidden = false;
+    if (!sendIt || dur < 0.6) { if (sendIt) toast('Too short'); return; }
+    const mime = (r.mimeType || 'audio/webm').split(';')[0];
+    const ext = mime.includes('mp4') ? 'm4a' : mime.includes('ogg') ? 'ogg' : 'webm';
+    upload(new Blob(recChunks, { type: mime }), 'voice', dur, `voice-${Date.now()}.${ext}`);
+  };
+  r.stop();
+}
+
+/* ============================================================
+   NETWORK DASHBOARD
+   ============================================================ */
+let netTimer = null, netData = null;
+function openNet() { $('net').hidden = false; refreshNet(); netTimer = setInterval(refreshNet, 4000); }
+function closeNet() { $('net').hidden = true; clearInterval(netTimer); }
+
+async function refreshNet() {
+  try {
+    const r = await fetch('/api/network', { cache: 'no-store' });
+    netData = await r.json();
+    online = netData.users;
+    renderNet();
+    $('netUpdated').textContent = 'updated ' + timeStr(netData.ts);
+    $('netUpdated').className = 'tag ok';
+  } catch {
+    $('netUpdated').textContent = 'Pi unreachable'; $('netUpdated').className = 'tag';
+  }
+}
+function stat(label, value) {
+  const s = el('div', 'stat'); s.append(el('b', '', value), el('span', '', label)); return s;
+}
+function renderNet() {
+  const p = netData.pi, c = netData.counts;
+  $('netSsid').textContent = p.ssid;
+  $('netStats').replaceChildren(
+    stat('In chat', String(netData.users.length)),
+    stat('On Wi-Fi', String(netData.wifi.filter(w => w.live).length)),
+    stat('Pi uptime', fmtAgo(p.uptime)),
+    stat('CPU temp', p.temp_c != null ? p.temp_c + ' °C' : '—'),
+    stat('CPU load', String(p.load)),
+    stat('RAM', `${p.mem_used_mb}/${p.mem_total_mb} MB`),
+    stat('SD card', `${p.disk_used_gb}/${p.disk_total_gb} GB`),
+    stat('Messages', String(c.total)),
+    stat('Files · Voice', `${c.files} · ${c.voice}`),
+  );
+  renderNetUsers();
+  renderSpam(netData.spam);
+  const wb = $('netWifi'); wb.textContent = '';
+  const wifi = netData.wifi;
+  $('netWifiCount').textContent = wifi.filter(w => w.live).length + ' live';
+  if (!wifi.length) { const tr = el('tr'); const td = el('td', 'muted', 'No Wi-Fi clients seen yet'); td.colSpan = 3; tr.append(td); wb.append(tr); }
+  wifi.forEach(w => {
+    const tr = el('tr');
+    const dev = el('td'); dev.append(el('div', '', w.hostname || '(no name)'), el('div', 'mono muted', w.mac || '')); dev.lastChild.style.padding = '0';
+    const st = el('td');
+    st.append(el('span', 'tag ' + (w.live ? 'ok' : ''), w.live ? 'connected' : 'away'));
+    if (w.in_chat) st.append(' ', el('span', 'tag you', 'in chat'));
+    tr.append(el('td', 'mono', w.ip), dev, st);
+    wb.append(tr);
+  });
+}
+function renderNetUsers() {
+  const ub = $('netUsers'); ub.textContent = '';
+  const now = Date.now() / 1000;
+  $('netUserCount').textContent = online.length + ' online';
+  if (!online.length) { const tr = el('tr'); const td = el('td', 'muted', 'Nobody connected'); td.colSpan = 4; tr.append(td); ub.append(tr); }
+  online.forEach(u => {
+    const tr = el('tr');
+    const n = el('td');
+    const dot = el('span', '', '●'); dot.style.color = avatarColor(u.name); dot.style.marginRight = '6px';
+    n.append(dot, u.name);
+    if (u.name === me && u.ip === myIp) n.append(' ', el('span', 'tag you', 'you'));
+    if (u.tabs > 1) n.append(' ', el('span', 'tag', u.tabs + ' tabs'));
+    const st = el('td');
+    st.append(u.throttled > 0 ? el('span', 'tag bad', `throttled ${u.throttled}s`) : el('span', 'tag ok', 'ok'));
+    tr.append(n, el('td', 'mono', u.ip), el('td', '', fmtAgo(now - u.since)), st);
+    ub.append(tr);
+  });
+}
+
+function renderSpam(sp) {
+  if (!sp) return;
+  $('spamSummary').textContent = sp.throttled.length ? sp.throttled.length + ' throttled now' : 'all clear';
+  $('spamSummary').style.color = sp.throttled.length ? '#ffa657' : '';
+  const tb = $('spamEvents'); tb.textContent = '';
+  if (!sp.events.length) {
+    const tr = el('tr'); const td = el('td', 'muted', `No one throttled yet · ${sp.flagged} message(s) flagged`);
+    td.colSpan = 4; tr.append(td); tb.append(tr);
+  }
+  sp.events.slice(0, 8).forEach(ev => {
+    const tr = el('tr');
+    const who = el('td'); who.append(el('div', '', ev.name), el('div', 'mono muted', ev.ip)); who.lastChild.style.padding = '0';
+    tr.append(el('td', 'mono', timeStr(ev.ts)), who, el('td', '', ev.reasons.join(', ')),
+              el('td', 'mono', ev.seconds + 's' + (ev.strike > 1 ? ` (#${ev.strike})` : '')));
+    tb.append(tr);
+  });
+  const r = sp.rules;
+  $('spamRules').replaceChildren(...[
+    ['Rapid burst', `> ${r.burst_count} msgs / ${r.burst_window}s · +2`],
+    ['Repeated message', `${r.repeat_count}× in ${r.repeat_window}s · +3`],
+    ['Very long message', `> ${r.long_chars} chars · +1`],
+    ['Suspicious repetition', 'aaaa / same word · +2'],
+    ['Upload flood', `> ${r.upload_count} files / ${r.upload_window}s · +2`],
+    ['Throttle at', `${r.threshold} pts in ${r.score_window}s`],
+    ['Timeout', `${r.block_base}s → ${r.block_base * 2}s → ${r.block_max}s`],
+    ['SOS', 'never throttled'],
+  ].flatMap(([a, b]) => [el('span', '', a), el('span', '', b)]));
+}
+
+/* ============================================================
+   CLEAR
+   ============================================================ */
+function clearLocal(showNotice) {
+  MSGS.textContent = '';
+  for (const k in sosMsgs) delete sosMsgs[k];
+  refreshMySos();
+  lastId = 0;
+  if (showNotice) renderSys('Chat cleared.');
+}
+function clearChat() {
+  if (!confirm('Clear the chat for EVERYONE?\nThis wipes all messages, files and voice notes.')) return;
+  fetch('/api/clear', { method: 'POST' }).then(r => { if (!r.ok) toast('Clear failed — server error'); });
+  clearLocal(true);
+}
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+$('uname').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeSos(); if (!$('net').hidden) closeNet(); }
+});
+document.addEventListener('pointerdown', unlockAudio, { once: true });
+
+if (token && me) {                       // returning user → straight in
+  $('gate').hidden = true;
+  $('me').textContent = me;
+  connect();
+} else {
+  showGate(false);
+}
+</script>
+</body>
+</html>
